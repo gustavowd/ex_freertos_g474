@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "message_buffer.h"
 #include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -57,15 +58,28 @@ void StartDefaultTask(void const * argument);
 /* USER CODE BEGIN PFP */
 SemaphoreHandle_t 		mutex_lpuart;
 SemaphoreHandle_t 		sem_lpuart;
+//SemaphoreHandle_t 		sem_button;
+QueueHandle_t 			queue_button;
 MessageBufferHandle_t 	print_messages_buffer;
 TimerHandle_t 			blinky_tm;
+TimerHandle_t 			button_tm;
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+void printk(char *string, TickType_t timeout) {
+	if (xSemaphoreTake(mutex_lpuart, timeout) == pdTRUE){
+		(void)xMessageBufferSend(print_messages_buffer, string, strlen(string), portMAX_DELAY);
+		xSemaphoreGive(mutex_lpuart);
+	}
+}
+
 static void serial_task1(void *param){
-	uint32_t cnt = 0;
+	//uint32_t cnt = 0;
 	while(1){
+		printk("Teste de serial 1!\n\r", portMAX_DELAY);
+#if 0
 		if (xSemaphoreTake(mutex_lpuart, portMAX_DELAY) == pdTRUE){
 			//HAL_UART_Transmit_IT(&hlpuart1, (uint8_t *)"Teste de serial 1!\n\r", 20);
 			//xSemaphoreTake(sem_lpuart, portMAX_DELAY);
@@ -75,14 +89,17 @@ static void serial_task1(void *param){
 			xSemaphoreGive(mutex_lpuart);
 			//cnt++;
 		}
+#endif
 		portYIELD();
 	}
 }
 
-volatile size_t space = 0;
+//volatile size_t space = 0;
 static void serial_task2(void *param){
-	uint32_t cnt = 0;
+	//uint32_t cnt = 0;weasdx
+	printk("Teste de serial 2!\n\r", portMAX_DELAY);
 	while(1){
+#if 0
 		if (xSemaphoreTake(mutex_lpuart, portMAX_DELAY) == pdTRUE){
 			//HAL_UART_Transmit_IT(&hlpuart1, (uint8_t *)"Teste de serial 2!\n\r", 20);
 			//xSemaphoreTake(sem_lpuart, portMAX_DELAY);
@@ -93,6 +110,7 @@ static void serial_task2(void *param){
 			space = xMessageBufferSpaceAvailable(print_messages_buffer);
 			//cnt++;
 		}
+#endif
 		portYIELD();
 	}
 }
@@ -114,9 +132,9 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
 }
 
 static void print_task(void *param){
-	char mensagem[128];
+	char mensagem[512];
 	while(1){
-		size_t len = xMessageBufferReceive(print_messages_buffer, mensagem, 128, portMAX_DELAY);
+		size_t len = xMessageBufferReceive(print_messages_buffer, mensagem, 512, portMAX_DELAY);
 		if (len) {
 			HAL_UART_Transmit_IT(&hlpuart1, (uint8_t *)mensagem, len);
 			xSemaphoreTake(sem_lpuart, portMAX_DELAY);
@@ -124,11 +142,77 @@ static void print_task(void *param){
 	}
 }
 
+
+#define BUTTON_0	(uint8_t)GPIO_PIN_13
+#define BUTTON_1	(uint8_t)GPIO_PIN_14
+
+BaseType_t read_button(uint8_t *button, TickType_t timeout){
+	return xQueueReceive(queue_button, button, timeout);
+}
+
+
+static void keyboard_task(void *param){
+	uint8_t button;
+	char buffer[512];
+	while(1){
+		(void)read_button(&button, portMAX_DELAY);
+		if (button == BUTTON_0) {
+			vTaskList(buffer);
+			printk(buffer, 10);
+		}
+	}
+}
+
+
+/*
+static void button_task(void *param){
+	int cnt = 0;
+	while(1){
+		xSemaphoreTake(sem_button, portMAX_DELAY);
+		cnt++;
+		vTaskDelay(100);
+		if (HAL_GPIO_ReadPin(GPIOC, BUTTON_0) == GPIO_PIN_RESET) {
+			// guardar em uma fila de botões
+			uint8_t button = BUTTON_0;
+			xQueueSend(queue_button, &button, portMAX_DELAY);
+		}
+	    __HAL_GPIO_EXTI_CLEAR_IT(BUTTON_0);
+		HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
+	}
+}
+*/
+void button_cb(TimerHandle_t xTimer)
+{
+  (void) xTimer;
+	if (HAL_GPIO_ReadPin(GPIOC, BUTTON_0) == GPIO_PIN_RESET) {
+		// guardar em uma fila de botões
+		uint8_t button = BUTTON_0;
+		xQueueSend(queue_button, &button, 0);
+	}
+  __HAL_GPIO_EXTI_CLEAR_IT(BUTTON_0);
+	HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+//volatile uint32_t cnt = 0;
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == GPIO_PIN_13)
+  {
+    //cnt++;
+    HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
+	portBASE_TYPE pxHigherPriorityTaskWoken = pdFALSE;
+	//xSemaphoreGiveFromISR(sem_button, &pxHigherPriorityTaskWoken);
+    xTimerStartFromISR(button_tm, &pxHigherPriorityTaskWoken);
+	portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
+  }
+}
+
+
 void led_blinky_cb(TimerHandle_t xTimer)
 {
   (void) xTimer;
   HAL_GPIO_TogglePin(USER_LED_GPIO_Port, USER_LED_Pin);
-
 }
 
 #define EVENTO_0 ( 1 << 0 )
@@ -215,16 +299,19 @@ int main(void)
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   sem_lpuart = xSemaphoreCreateBinary();
+  //sem_button = xSemaphoreCreateBinary();
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
-  blinky_tm = xTimerCreate("Blink timer", pdMS_TO_TICKS(500), pdTRUE, NULL, led_blinky_cb);
+  blinky_tm = xTimerCreate("Blink timer", pdMS_TO_TICKS(200), pdTRUE, NULL, led_blinky_cb);
   xTimerStart(blinky_tm, 0);
+  button_tm = xTimerCreate("Button timer", pdMS_TO_TICKS(100), pdFALSE, NULL, button_cb);
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  queue_button = xQueueCreate(128, sizeof(uint8_t));
   print_messages_buffer = xMessageBufferCreate(1024);
   /* USER CODE END RTOS_QUEUES */
 
@@ -235,15 +322,17 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
-  xTaskCreate(serial_task1, "Task serial 1", 256, NULL, 5, NULL);
-  xTaskCreate(serial_task2, "Task serial 2", 256, NULL, 5, NULL);
+  //xTaskCreate(serial_task1, "Task serial 1", 256, NULL, 5, NULL);
+  //xTaskCreate(serial_task2, "Task serial 2", 256, NULL, 5, NULL);
   xTaskCreate(print_task, "Print Task", 256, NULL, 10, NULL);
+  //xTaskCreate(button_task, "Button Task", 256, NULL, 12, NULL);
+  xTaskCreate(keyboard_task, "Keyboard Task", 512, NULL, 5, NULL);
   xTaskCreate(sobra_cpu, "Sobra CPU", 256, NULL, 1, NULL);
 
 
-  xTaskCreate(produtor1, "Tarefa produtora 1", 256, NULL, 7, NULL);
-  xTaskCreate(produtor2, "Tarefa produtora 2", 256, NULL, 8, NULL);
-  xTaskCreate(consumidor, "Tarefa consumidora", 256, NULL, 8, NULL);
+  //xTaskCreate(produtor1, "Tarefa produtora 1", 256, NULL, 7, NULL);
+  //xTaskCreate(produtor2, "Tarefa produtora 2", 256, NULL, 8, NULL);
+  //xTaskCreate(consumidor, "Tarefa consumidora", 256, NULL, 8, NULL);
 
   /* Tentativa de criar o grupo */
   exemplo_grupo_eventos = xEventGroupCreate();
@@ -369,11 +458,18 @@ static void MX_GPIO_Init(void)
 /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USER_LED_GPIO_Port, USER_LED_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : PC13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : USER_LED_Pin */
   GPIO_InitStruct.Pin = USER_LED_Pin;
@@ -381,6 +477,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(USER_LED_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
