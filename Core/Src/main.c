@@ -77,7 +77,8 @@ void StartDefaultTask(void const * argument);
 /* USER CODE BEGIN PFP */
 SemaphoreHandle_t 		mutex_lpuart;
 SemaphoreHandle_t 		sem_lpuart;
-SemaphoreHandle_t 		sem_adc;
+//SemaphoreHandle_t     sem_adc;
+QueueHandle_t 			queue_adc;
 //SemaphoreHandle_t 	sem_button;
 QueueHandle_t 			queue_button;
 QueueHandle_t 			queue_lpuart;
@@ -85,9 +86,9 @@ MessageBufferHandle_t 	print_messages_buffer;
 TimerHandle_t 			blinky_tm;
 TimerHandle_t 			button_tm;
 
-static xQueueSetMemberHandle link_event;
+//static xQueueSetMemberHandle link_event;
 
-uint16_t 	adcBuffer[256];
+uint16_t 	adcBuffer[256*2];
 float 		ReIm[256*2];
 float 		mod[256];
 /* USER CODE END PFP */
@@ -587,9 +588,20 @@ uint16_t sin_wave_3rd_harmonic[256] = {2048, 2136, 2224, 2311, 2398, 2484, 2569,
 		850, 915, 983, 1054, 1127, 1203, 1281, 1361, 1443, 1526, 1611, 1697, 1784, 1871, 1959,
 		2047};
 
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
+	portBASE_TYPE pxHigherPriorityTaskWoken = pdFALSE;
+	//xSemaphoreGiveFromISR(sem_adc, &pxHigherPriorityTaskWoken);
+	uint8_t buffer=1;
+	xQueueSendToBackFromISR(queue_adc, &buffer, &pxHigherPriorityTaskWoken);
+	portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
+}
+
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 	portBASE_TYPE pxHigherPriorityTaskWoken = pdFALSE;
-	xSemaphoreGiveFromISR(sem_adc, &pxHigherPriorityTaskWoken);
+	//xSemaphoreGiveFromISR(sem_adc, &pxHigherPriorityTaskWoken);
+	uint8_t buffer=2;
+	xQueueSendToBackFromISR(queue_adc, &buffer, &pxHigherPriorityTaskWoken);
 	portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
 }
 
@@ -616,20 +628,31 @@ void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef* hadc){
 }
 
 void adc_task(void *param){
-	HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adcBuffer, 256);
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adcBuffer, 256*2);
     HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t*)sin_wave_3rd_harmonic, 256, DAC_ALIGN_12B_R);
 
 	HAL_TIM_Base_Start(&htim8);
     HAL_TIM_Base_Start(&htim3);
 
+    uint8_t dual_buffer_choice = 0;
 	while(1){
-		xSemaphoreTake(sem_adc, portMAX_DELAY);
+		//xSemaphoreTake(sem_adc, portMAX_DELAY);
+		xQueueReceive(queue_adc, &dual_buffer_choice, portMAX_DELAY);
 
 		int k = 0;
-		for(int i = 0; i < 256; i++){
-			ReIm[k] = (float)adcBuffer[i] * 0.0008056640625;
-			ReIm[k+1] = 0.0;
-			k += 2;
+		if (dual_buffer_choice == 1){
+			for(int i = 0; i < 256; i++){
+				ReIm[k] = (float)adcBuffer[i] * 0.0008056640625;
+				ReIm[k+1] = 0.0;
+				k += 2;
+			}
+		}
+		if (dual_buffer_choice == 2){
+			for(int i = 0; i < 256; i++){
+				ReIm[k] = (float)adcBuffer[i+256] * 0.0008056640625;
+				ReIm[k+1] = 0.0;
+				k += 2;
+			}
 		}
 
 		arm_cfft_f32(&arm_cfft_sR_f32_len256,ReIm,0,1);
@@ -690,7 +713,7 @@ int main(void)
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   sem_lpuart = xSemaphoreCreateBinary();
-  sem_adc = xSemaphoreCreateBinary();
+  //sem_adc = xSemaphoreCreateBinary();
   //sem_button = xSemaphoreCreateBinary();
   /* USER CODE END RTOS_SEMAPHORES */
 
@@ -705,6 +728,7 @@ int main(void)
   /* add queues, ... */
   queue_button = xQueueCreate(128, sizeof(uint8_t));
   queue_lpuart = xQueueCreate(128, sizeof(uint8_t));
+  queue_adc = xQueueCreate(1, sizeof(uint8_t));
   print_messages_buffer = xMessageBufferCreate(1024);
   /* USER CODE END RTOS_QUEUES */
 
