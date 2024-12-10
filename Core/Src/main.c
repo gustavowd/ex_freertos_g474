@@ -635,6 +635,7 @@ void adc_task(void *param){
     HAL_TIM_Base_Start(&htim3);
 
     uint8_t dual_buffer_choice = 0;
+    float cc_value = 0.0;
 	while(1){
 		//xSemaphoreTake(sem_adc, portMAX_DELAY);
 		xQueueReceive(queue_adc, &dual_buffer_choice, portMAX_DELAY);
@@ -643,6 +644,7 @@ void adc_task(void *param){
 		if (dual_buffer_choice == 1){
 			for(int i = 0; i < 256; i++){
 				ReIm[k] = (float)adcBuffer[i] * 0.0008056640625;
+				cc_value += ReIm[k];
 				ReIm[k+1] = 0.0;
 				k += 2;
 			}
@@ -650,10 +652,18 @@ void adc_task(void *param){
 		if (dual_buffer_choice == 2){
 			for(int i = 0; i < 256; i++){
 				ReIm[k] = (float)adcBuffer[i+256] * 0.0008056640625;
+				cc_value += ReIm[k];
 				ReIm[k+1] = 0.0;
 				k += 2;
 			}
 		}
+
+		cc_value /= 256;
+		float rms = 0.0;
+		for(int i = 0; i < 256; i++){
+			rms += (ReIm[k] - cc_value) * (ReIm[k] - cc_value);
+		}
+		rms = sqrtf(rms/256);
 
 		arm_cfft_f32(&arm_cfft_sR_f32_len256,ReIm,0,1);
 		arm_cmplx_mag_f32(ReIm,mod,256);
